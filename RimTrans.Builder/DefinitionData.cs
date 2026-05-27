@@ -52,6 +52,7 @@ namespace RimTrans.Builder {
             DefinitionData definitionData = new DefinitionData();
 
             definitionData.Load(path);
+            definitionData.LoadPatches(path);
 
             if (definitionData._data.Count == 0)
                 return definitionData;
@@ -147,7 +148,104 @@ namespace RimTrans.Builder {
                 Log.WriteLine(ConsoleColor.Cyan, path);
             }
         }
+        
+/// <summary>
+/// Load from Patches folder and apply PatchOperationAdd nodes as extra Defs
+/// </summary>
+private void LoadPatches(string basePath) {
+    // Patches 資料夾跟 Defs 同層，所以把路徑的 \Defs 換成 \Patches
+    string patchesPath = Path.Combine(
+        Directory.GetParent(basePath).FullName,
+        "Patches"
+    );
 
+    DirectoryInfo dirInfo = new DirectoryInfo(patchesPath);
+    if (!dirInfo.Exists) {
+        return;
+    }
+
+    Log.Info();
+    Log.Write("Loading Patches: ");
+    Log.WriteLine(ConsoleColor.Cyan, patchesPath);
+
+    int countValidFiles = 0;
+    int countInvalidFiles = 0;
+    int splitIndex = dirInfo.FullName.Length + 1;
+
+    foreach (FileInfo fileInfo in dirInfo.GetFiles("*.xml", SearchOption.AllDirectories)) {
+        XDocument doc = null;
+        string filePath = fileInfo.FullName;
+        try {
+            doc = XDocument.Load(filePath, LoadOptions.SetBaseUri);
+            countValidFiles++;
+        } catch (XmlException ex) {
+            Log.Error();
+            Log.Write("Loading Patches file failed: ");
+            Log.WriteLine(ConsoleColor.Red, filePath);
+            Log.Indent();
+            Log.WriteLine(ex.Message);
+            countInvalidFiles++;
+            continue;
+        }
+
+        if (doc == null) continue;
+
+        // 只處理 PatchOperationAdd，把裡面的 <value> 節點當作額外的 Def
+        foreach (XElement patch in doc.Root.Elements()) {
+            // 支援 Class="PatchOperationAdd" 或 Class="PatchOperationReplace"
+            XAttribute classAttr = patch.Attribute("Class");
+            if (classAttr == null) continue;
+
+            string className = classAttr.Value;
+            if (!className.Contains("PatchOperationAdd") &&
+                !className.Contains("PatchOperationReplace")) continue;
+
+            // 找 <value> 裡的 Def 節點
+            XElement valueEle = patch.Element("value");
+            if (valueEle == null) continue;
+
+            foreach (XElement newDef in valueEle.Elements()) {
+                // 確認是已知的 DefType 且有 defName
+                if (!newDef.HasField_defName()) continue;
+
+                bool isKnownDef = false;
+                foreach (string defTypeName in DefTypeNameOf.AllNames) {
+                    if (string.Compare(newDef.Name.ToString(), defTypeName, true) == 0) {
+                        isKnownDef = true;
+                        if (newDef.Name.ToString() != defTypeName)
+                            newDef.Name = defTypeName;
+                        break;
+                    }
+                }
+                if (!isKnownDef) continue;
+
+                // 把這個 Def 注入到現有的 _data 裡
+                string patchKey = "Patches\\" + filePath.Substring(splitIndex);
+                if (!this._data.ContainsKey(patchKey)) {
+                    XDocument patchDoc = DocHelper.EmptyDocDef();
+                    this._data.Add(patchKey, patchDoc);
+                }
+                this._data[patchKey].Root.Add(newDef);
+
+                // 同時記錄 abstract
+                if (newDef.Attribute("Name") != null) {
+                    XElement abstrGroup = this._abstracts.Element(newDef.Name);
+                    if (abstrGroup == null) {
+                        abstrGroup = new XElement(newDef.Name);
+                        this._abstracts.Add(abstrGroup);
+                    }
+                    newDef.SetAttributeValue("Uri", newDef.BaseUri);
+                    abstrGroup.Add(newDef);
+                }
+            }
+        }
+    }
+
+    if (countValidFiles > 0) {
+        Log.Info();
+        Log.WriteLine("Completed Loading Patches: {0} file(s).", countValidFiles);
+    }
+}
         #endregion
 
         #region Inherit

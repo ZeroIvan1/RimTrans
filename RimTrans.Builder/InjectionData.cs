@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -197,8 +197,15 @@ namespace RimTrans.Builder {
                                     Log.WriteLine(ConsoleColor.Red, defName.BaseUri);
                                     countInvalidDefs++;
                                 }
-                                if (isValid) {
+                                if (isValid)
+                                {
                                     int count = injectionData.AddFromDef(def, pathDocPair, defName, commentText);
+                                    // 如果 AddFromDef 沒抓到任何欄位，用 fallback 直接掃 label/description
+                                    if (count == 0)
+                                    {
+                                        count = injectionData.AddFromDefFallback(def, pathDocPair, defName);
+                                    }
+
                                     if (count > 0) {
                                         countValidDefs++;
                                         countFields += count;
@@ -277,6 +284,31 @@ namespace RimTrans.Builder {
         /// <summary>
         /// Generate DefInjected contents, (universal)
         /// </summary>
+        /// <summary>
+        /// Fallback: 直接掃描 label 和 description，不依賴 Capture
+        /// </summary>
+        private int AddFromDefFallback(XElement def, KeyValuePair<string, XDocument> pathDocPair, XElement defName)
+        {
+            int result = 0;
+            XElement label = def.label();
+            XElement description = def.description();
+            if (label == null && description == null)
+                return 0;
+
+            XDocument doc = this.GetDocEx(def.Name.ToString(), Path.GetFileName(pathDocPair.Key));
+            XElement root = doc.Root;
+            if (label != null)
+            {
+                root.Add("  ", new XElement(defName.Value + ".label", label.Value), "\n");
+                result++;
+            }
+            if (description != null)
+            {
+                root.Add("  ", new XElement(defName.Value + ".description", description.Value), "\n");
+                result++;
+            }
+            return result;
+        }
         private int AddFromDef(XElement def, KeyValuePair<string, XDocument> pathDocPair, XElement defName, string commentText) {
             int result = 0;
 
@@ -329,10 +361,32 @@ namespace RimTrans.Builder {
                         isPawn = true;
                     }
                 }
-            } else if (defTypeName == DefTypeNameOf.DesignationCategoryDef) {
+            }
+            else if (defTypeName == DefTypeNameOf.DesignationCategoryDef)
+            {
                 this.AddKeyBindingCategoriesAddArchitect(def, defName);
                 result += 2;
-            } else if (defTypeName == DefTypeNameOf.MainTabDef || defTypeName == DefTypeNameOf.MainButtonDef) {
+                // 直接加入 label 和 description
+                XElement desigLabel = def.label();
+                XElement desigDesc = def.description();
+                if (desigLabel != null || desigDesc != null)
+                {
+                    XDocument desigDoc = this.GetDocEx(defTypeName, Path.GetFileName(pathDocPair.Key));
+                    XElement desigRoot = desigDoc.Root;
+                    if (desigLabel != null)
+                    {
+                        desigRoot.Add("  ", new XElement(defName.Value + ".label", desigLabel.Value), "\n");
+                        result++;
+                    }
+                    if (desigDesc != null)
+                    {
+                        desigRoot.Add("  ", new XElement(defName.Value + ".description", desigDesc.Value), "\n");
+                        result++;
+                    }
+                }
+            }
+
+            else if (defTypeName == DefTypeNameOf.MainTabDef || defTypeName == DefTypeNameOf.MainButtonDef) {
                 if (def.Field(FieldNameOf.defaultToggleKey) != null || def.Field(FieldNameOf.defaultHotKey) != null) {
                     this.AddKeyBindingsAddMainTab(def, defName);
                     result++;

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -206,8 +206,45 @@ namespace RimTrans.Trans
             }
 
             // Check Core Path
-            if (generateOption == "Standard" &&
-                (string.IsNullOrWhiteSpace(corePath) || !Directory.Exists(corePath)))
+            // Check Core Path - 嘗試自動偵測
+            if (string.IsNullOrWhiteSpace(corePath) || !Directory.Exists(corePath))
+            {
+                try
+                {
+                    string searchPath = modPath;
+                    for (int i = 0; i < 6; i++)
+                    {
+                        string parent = Directory.GetParent(searchPath)?.FullName;
+                        if (parent == null || parent == searchPath) break;
+                        searchPath = parent;
+                        if (Path.GetFileName(searchPath).Equals("steamapps", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string autoCore = Path.Combine(searchPath, "common", "RimWorld", "Data", "Core");
+                            if (Directory.Exists(autoCore))
+                            {
+                                corePath = autoCore;
+                                Log.Info();
+                                Log.WriteLine(ConsoleColor.Cyan, $"Auto-detected Core: {autoCore}");
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (!string.IsNullOrWhiteSpace(corePath) && Directory.Exists(corePath))
+            {
+                // 有 Core 路徑（手動或自動偵測），強制用 Standard Mode
+                if (generateOption == "Core")
+                {
+                    generateOption = "Standard";
+                    Log.Info();
+                    Log.Write("Changed Generate Option to ");
+                    Log.WriteLine(ConsoleColor.Cyan, "Standard Mode");
+                }
+            }
+            else if (generateOption == "Standard")
             {
                 generateOption = "Core";
                 Log.Warning();
@@ -263,9 +300,26 @@ namespace RimTrans.Trans
                 capture.ProcessFieldNames(Defs);
                 InjectionData DefInjected_Original = InjectionData.Parse("Original", Defs);
 
-                string keyedPath_English = Path.Combine(modPath, "Languages", "English", "Keyed");
-                string stringsPath_English = Path.Combine(modPath, "Languages", "English", "Strings");
+                // 用 ResolveFolders 找正確的語言資料夾
+                string keyedPath_English = null;
+                string stringsPath_English = null;
+                List<string> langFolders = DefinitionData.ResolveFolders(modPath);
+                foreach (string folder in langFolders)
+                {
+                    string candidate = Path.Combine(folder, "Languages", "English", "Keyed");
+                    if (Directory.Exists(candidate))
+                    {
+                        keyedPath_English = candidate;
+                        stringsPath_English = Path.Combine(folder, "Languages", "English", "Strings");
+                        break;
+                    }
+                }
+                if (keyedPath_English == null)
+                    keyedPath_English = Path.Combine(modPath, "Languages", "English", "Keyed");
+                if (stringsPath_English == null)
+                    stringsPath_English = Path.Combine(modPath, "Languages", "English", "Strings");
                 KeyedData Keyed_English = KeyedData.Load("English", keyedPath_English);
+
                 Log.WriteLine(ConsoleColor.Green, "======== Completed Processing Defs and Original Language Data ========");
                 Log.WriteLine();
 
@@ -355,11 +409,30 @@ namespace RimTrans.Trans
                 Log.WriteLine();
                 
                 Log.WriteLine(ConsoleColor.Green, "======== Start Processing Mod Defs and Original Language Data ========");
-                string defsPath = Path.Combine(modPath, "Defs");
-                string keyedPath_English = Path.Combine(modPath, "Languages", "English", "Keyed");
-                string stringsPath_English = Path.Combine(modPath, "Languages", "English", "Strings");
 
+                // 用 ResolveFolders 找正確路徑
+                List<string> modLangFolders = DefinitionData.ResolveFolders(modPath);
+                string keyedPath_English = null;
+                string stringsPath_English = null;
+                foreach (string folder in modLangFolders)
+                {
+                    string candidate = Path.Combine(folder, "Languages", "English", "Keyed");
+                    if (Directory.Exists(candidate))
+                    {
+                        keyedPath_English = candidate;
+                        stringsPath_English = Path.Combine(folder, "Languages", "English", "Strings");
+                        break;
+                    }
+                }
+                if (keyedPath_English == null)
+                    keyedPath_English = Path.Combine(modPath, "Languages", "English", "Keyed");
+                if (stringsPath_English == null)
+                    stringsPath_English = Path.Combine(modPath, "Languages", "English", "Strings");
+
+                // Defs 用第一個有資料的資料夾
+                string defsPath = Path.Combine(modPath, "Defs");
                 DefinitionData Defs = DefinitionData.Load(defsPath, Core_Defs);
+
                 capture.ProcessFieldNames(Defs);
                 InjectionData DefInjected_Original = InjectionData.Parse("Original", Defs);
                 KeyedData Keyed_English = KeyedData.Load("English", keyedPath_English);

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -48,11 +48,29 @@ namespace RimTrans.Builder {
         /// Load from files
         /// </summary>
         /// <param name="definitionDataCore">For getting Core abstractions</param>
-        public static DefinitionData Load(string path, DefinitionData definitionDataCore = null) {
+        public static DefinitionData Load(string path, DefinitionData definitionDataCore = null)
+        {
             DefinitionData definitionData = new DefinitionData();
 
-            definitionData.Load(path);
-            definitionData.LoadPatches(path);
+            // 取得 Mod 根目錄 (path 是 Defs 路徑，往上一層是根目錄)
+            // 往上找到真正的 Mod 根目錄（包含 LoadFolders.xml 的那層）
+            string modRoot = path;
+            while (!File.Exists(Path.Combine(modRoot, "LoadFolders.xml")) &&
+                   !File.Exists(Path.Combine(modRoot, "About", "About.xml")))
+            {
+                string parent = Directory.GetParent(modRoot)?.FullName;
+                if (parent == null || parent == modRoot) break;
+                modRoot = parent;
+            }
+            List<string> foldersToLoad = ResolveFolders(modRoot);
+
+            foreach (string folder in foldersToLoad)
+            {
+                string defsPath = Path.Combine(folder, "Defs");
+                string patchesPath = Path.Combine(folder, "Patches");
+                definitionData.Load(defsPath);
+                definitionData.LoadPatches(patchesPath);
+            }
 
             if (definitionData._data.Count == 0)
                 return definitionData;
@@ -148,19 +166,16 @@ namespace RimTrans.Builder {
                 Log.WriteLine(ConsoleColor.Cyan, path);
             }
         }
-        
-/// <summary>
-/// Load from Patches folder and apply PatchOperationAdd nodes as extra Defs
-/// </summary>
-private void LoadPatches(string basePath) {
-    // Patches 資料夾跟 Defs 同層，所以把路徑的 \Defs 換成 \Patches
-    string patchesPath = Path.Combine(
-        Directory.GetParent(basePath).FullName,
-        "Patches"
-    );
 
-    DirectoryInfo dirInfo = new DirectoryInfo(patchesPath);
-    if (!dirInfo.Exists) {
+        /// <summary>
+        /// Load from Patches folder and apply PatchOperationAdd nodes as extra Defs
+        /// </summary>
+        private void LoadPatches(string patchesPath)
+        {
+
+
+            DirectoryInfo dirInfo = new DirectoryInfo(patchesPath);
+            if (!dirInfo.Exists) {
         return;
     }
 
@@ -245,6 +260,73 @@ private void LoadPatches(string basePath) {
         Log.Info();
         Log.WriteLine("Completed Loading Patches: {0} file(s).", countValidFiles);
     }
+}
+
+        /// <summary>
+        /// 讀取 LoadFolders.xml，回傳所有需要掃描的資料夾路徑
+        /// </summary>
+        public static List<string> ResolveFolders(string modRoot)
+        {
+            {
+            var folders = new List<string>();
+            string loadFoldersPath = Path.Combine(modRoot, "LoadFolders.xml");
+
+            if (!File.Exists(loadFoldersPath))
+            {
+                // 沒有 LoadFolders.xml，直接用根目錄
+                folders.Add(modRoot);
+                return folders;
+            }
+
+            try
+            {
+                XDocument doc = XDocument.Load(loadFoldersPath);
+                // 優先找最新版本：1.6 → 1.5 → 1.4 → 1.3
+                string[] versionPriority = { "v1.6", "v1.5", "v1.4", "v1.3" };
+                XElement bestVersion = null;
+                foreach (string ver in versionPriority)
+                {
+                    bestVersion = doc.Root.Element(ver);
+                    if (bestVersion != null) break;
+                }
+
+                if (bestVersion == null)
+                {
+                    folders.Add(modRoot);
+                    return folders;
+                }
+
+                foreach (XElement li in bestVersion.Elements("li"))
+                {
+                    // 跳過有 IfModActive 條件的（可選模組，暫不處理）
+                    if (li.Attribute("IfModActive") != null) continue;
+
+                    string folderVal = li.Value.Trim();
+                    string fullPath;
+                    if (folderVal == "/")
+                    {
+                        fullPath = modRoot;
+                    }
+                    else
+                    {
+                        fullPath = Path.Combine(modRoot, folderVal.TrimStart('/'));
+                    }
+
+                    if (Directory.Exists(fullPath))
+                    {
+                        folders.Add(fullPath);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning();
+                Log.WriteLine("Failed to read LoadFolders.xml: " + ex.Message);
+                folders.Add(modRoot);
+            }
+
+            return folders;
+        }
 }
         #endregion
 

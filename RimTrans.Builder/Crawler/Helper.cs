@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
@@ -134,7 +134,7 @@ namespace RimTrans.Builder.Crawler {
         /// <summary>
         /// All DefType classes
         /// </summary>
-        public readonly static IEnumerable<Type> AllClassesDef = typeof(Def).AllSubclasses();
+        public readonly static IEnumerable<Type> AllClassesDef = new List<Type>();
 
         /// <summary>
         /// Decompiled source code directory of Assembly-CSharp.dll

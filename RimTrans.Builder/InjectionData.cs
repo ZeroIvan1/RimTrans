@@ -216,6 +216,36 @@ namespace RimTrans.Builder {
                     }
                 }
                 if (countFields > 0) {
+                    // 處理 BodyDef customLabel
+                    if (definitionData.BodyDefCustomLabels.Count > 0)
+                    {
+                        // 用來追蹤每個 sourceFile 對應的 doc
+                        var bodyDefDocs = new SortedDictionary<string, XDocument>();
+
+                        foreach (var (injectionPath, englishLabel, sourceFile) in definitionData.BodyDefCustomLabels)
+                        {
+                            string fileName = sourceFile;
+                            if (!bodyDefDocs.ContainsKey(fileName))
+                            {
+                                bodyDefDocs[fileName] = DocHelper.EmptyDocEx();
+                            }
+                            XDocument doc = bodyDefDocs[fileName];
+                            doc.Root.Add("  ", new XElement(injectionPath, englishLabel), "\n");
+                        }
+
+                        // 加到 InjectionData 的 _data 裡
+                        SortedDictionary<string, XDocument> bodyDefSubData;
+                        if (!injectionData._data.TryGetValue("BodyDef", out bodyDefSubData))
+                        {
+                            bodyDefSubData = new SortedDictionary<string, XDocument>();
+                            injectionData._data.Add("BodyDef", bodyDefSubData);
+                        }
+                        foreach (var kvp in bodyDefDocs)
+                        {
+                            if (!bodyDefSubData.ContainsKey(kvp.Key))
+                                bodyDefSubData.Add(kvp.Key, kvp.Value);
+                        }
+                    }
                     injectionData.Tidy();
                     //if (isCore)
                     //{
@@ -479,8 +509,19 @@ namespace RimTrans.Builder {
                         if (isDefName) {
                             fullFieldName.Append(linkedField.Value);
                             isDefName = false;
-                        } else if (linkedField.Name == "li") {
-                            fullFieldName.Append(linkedField.Attribute("ListIndex").Value);
+                        }
+                        else if (linkedField.Name == "li")
+                        {
+                            // 優先用 def 名稱（例如 BodyDef 的 parts 用 defName 定位）
+                            XElement defNameEle = linkedField.Element("def") ?? linkedField.Element("defName");
+                            if (defNameEle != null && !string.IsNullOrWhiteSpace(defNameEle.Value))
+                            {
+                                fullFieldName.Append(defNameEle.Value);
+                            }
+                            else
+                            {
+                                fullFieldName.Append(linkedField.Attribute("ListIndex").Value);
+                            }
                         } else {
                             fullFieldName.Append(linkedField.Name.ToString());
                         }
@@ -911,7 +952,18 @@ namespace RimTrans.Builder {
                 string defTypeName = defTypeNameSubDataPair.Key;
                 bool isNonStandard = false;
                 this._data.TryGetValue(defTypeName, out subData);
-                if (subData == null && defTypeName.Length > 3) {
+
+                // 嘗試用短名稱比對長名稱資料夾
+                // 例如已有翻譯是 "PeteTimesSix...ResearchOpportunityTypeDef"
+                // 但現在產生的是 "ResearchOpportunityTypeDef"
+                if (subData == null && defTypeName.Contains("."))
+                {
+                    string shortKey = defTypeName.Substring(defTypeName.LastIndexOf('.') + 1);
+                    this._data.TryGetValue(shortKey, out subData);
+                }
+
+                if (subData == null && defTypeName.Length > 3)
+                {
                     this._data.TryGetValue(defTypeName.Substring(0, defTypeName.Length - 1), out subData);
                     isNonStandard = true;
                 }

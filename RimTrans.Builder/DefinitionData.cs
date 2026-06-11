@@ -12,6 +12,14 @@ using RimTrans.Builder.Xml;
 namespace RimTrans.Builder {
     public class DefinitionData {
         private SortedDictionary<string, XDocument> _data;
+
+        // 儲存 BodyDef patch 裡的 customLabel 資訊
+        // key: "BodyDefName.path.defName.customLabel" → value: "english label"
+        private List<(string injectionPath, string englishLabel, string sourceFile)> _bodyDefCustomLabels
+            = new List<(string, string, string)>();
+
+        public IReadOnlyList<(string injectionPath, string englishLabel, string sourceFile)> BodyDefCustomLabels
+            => this._bodyDefCustomLabels;
         public SortedDictionary<string, XDocument> Data { get { return this._data; } }
 
         // Storage nodes those have attribute Name="XXXX"
@@ -62,8 +70,11 @@ namespace RimTrans.Builder {
                 if (parent == null || parent == modRoot) break;
                 modRoot = parent;
             }
-            List<string> foldersToLoad = ResolveFolders(modRoot);
 
+            List<string> foldersToLoad = ResolveFolders(modRoot);
+            definitionData._data = new SortedDictionary<string, XDocument>();
+            definitionData._abstracts = new XElement("Abstracts");
+            definitionData._bodyDefCustomLabels = new List<(string, string, string)>();
             foreach (string folder in foldersToLoad)
             {
                 string defsPath = Path.Combine(folder, "Defs");
@@ -92,9 +103,13 @@ namespace RimTrans.Builder {
             return definitionData;
         }
 
-        private void Load(string path) {
-            this._data = new SortedDictionary<string, XDocument>();
-            this._abstracts = new XElement("Abstracts");
+        private void Load(string path)
+        {
+            if (this._data == null)
+            {
+                this._data = new SortedDictionary<string, XDocument>();
+                this._abstracts = new XElement("Abstracts");
+            }
 
             DirectoryInfo dirInfo = new DirectoryInfo(path);
             if (dirInfo.Exists) {
@@ -119,11 +134,38 @@ namespace RimTrans.Builder {
                         countInvalidFiles++;
                     }
                     if (doc != null) {
-                        foreach (XElement def in doc.Root.Elements()) {
-                            foreach (string defTypeName in DefTypeNameOf.AllNames) {
-                                if (string.Compare(def.Name.ToString(), defTypeName, true) == 0 && def.Name.ToString() != defTypeName) {
+                        foreach (XElement def in doc.Root.Elements())
+                        {
+                            string defNameStr = def.Name.ToString();
+                            // 取最後一段，處理命名空間長名稱
+                            // 例如 "PeteTimesSix.ResearchReinvented.Defs.ResearchOpportunityTypeDef"
+                            // → shortName = "ResearchOpportunityTypeDef"
+                            string shortName = defNameStr.Contains(".")
+                                ? defNameStr.Substring(defNameStr.LastIndexOf('.') + 1)
+                                : defNameStr;
+
+                            bool matched = false;
+                            foreach (string defTypeName in DefTypeNameOf.AllNames)
+                            {
+                                // 完整名稱大小寫修正
+                                if (string.Compare(defNameStr, defTypeName, true) == 0 && defNameStr != defTypeName)
+                                {
                                     def.Name = defTypeName;
+                                    matched = true;
+                                    break;
                                 }
+                                // 短名稱匹配（命名空間形式）
+                                if (defNameStr != shortName && string.Compare(shortName, defTypeName, true) == 0)
+                                {
+                                    def.Name = defTypeName;
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            // 找不到已知 DefType，但有命名空間前綴，直接用短名稱保留
+                            if (!matched && defNameStr != shortName)
+                            {
+                                // 保留原始長名稱，讓 RimWorld 遊戲可以正確讀取 DefInjected 資料夾
                             }
                         }
                         this._data.Add(filePath.Substring(splitIndex), doc);
@@ -205,8 +247,59 @@ namespace RimTrans.Builder {
 
         if (doc == null) continue;
 
-        // 只處理 PatchOperationAdd，把裡面的 <value> 節點當作額外的 Def
-        foreach (XElement patch in doc.Root.Elements()) {
+                // 特別處理 BodyDef patch 裡的 customLabel
+                foreach (XElement patch in doc.Root.Elements())
+                {
+                    XAttribute classAttr = patch.Attribute("Class");
+                    if (classAttr == null || !classAttr.Value.Contains("PatchOperationAdd")) continue;
+
+                    XElement xpathEle = patch.Element("xpath");
+                    XElement valueEle = patch.Element("value");
+                    if (xpathEle == null || valueEle == null) continue;
+
+                    string xpath = xpathEle.Value;
+                    if (!xpath.Contains("BodyDef")) continue;
+
+                    // 解析 BodyDef 的 defName，例如 /Defs/BodyDef[defName="Human"]/...
+                    var bodyDefMatch = System.Text.RegularExpressions.Regex.Match(
+                        xpath, @"BodyDef\[defName=""([^""]+)""\]");
+                    if (!bodyDefMatch.Success) continue;
+                    string bodyDefName = bodyDefMatch.Groups[1].Value;
+
+                    // 解析 xpath 中的父層路徑，把 li[customLabel="xxx"] 和 li[def="xxx"] 轉成路徑段
+                    // 例如 /corePart/parts/li[customLabel="left leg"]/parts → corePart.parts.left leg.parts
+                    string parentPath = xpath
+                        .Replace($"/Defs/BodyDef[defName=\"{bodyDefName}\"]", "")
+                        .Replace("/", ".");
+                    // 把 .li[customLabel="..."] 轉成 .CUSTOMLABEL_VALUE
+                    parentPath = System.Text.RegularExpressions.Regex.Replace(
+                        parentPath, @"\.li\[customLabel=""([^""]+)""\]", m => "." + m.Groups[1].Value.Replace(" ", "_"));
+                    // 把 .li[def="..."] 轉成 .DEF_VALUE
+                    parentPath = System.Text.RegularExpressions.Regex.Replace(
+                        parentPath, @"\.li\[def=""([^""]+)""\]", m => "." + m.Groups[1].Value);
+                    parentPath = parentPath.TrimStart('.');
+
+                    // 找 value 裡有 customLabel 的 li
+                    foreach (XElement li in valueEle.Elements("li"))
+                    {
+                        XElement defEle = li.Element("def");
+                        XElement customLabelEle = li.Element("customLabel");
+                        if (defEle == null || customLabelEle == null) continue;
+
+                        string partDefName = defEle.Value;
+                        string englishLabel = customLabelEle.Value;
+
+                        // 建立完整 injection path
+                        // 格式：BodyDefName.corePart.parts.ParentPath.parts.PartDefName.customLabel
+                        string injectionPath = $"{bodyDefName}.{parentPath}.{partDefName}.customLabel";
+
+                        string sourceFileName = Path.GetFileName(filePath);
+                        this._bodyDefCustomLabels.Add((injectionPath, englishLabel, sourceFileName));
+                    }
+                }
+
+                // 只處理 PatchOperationAdd，把裡面的 <value> 節點當作額外的 Def
+                foreach (XElement patch in doc.Root.Elements()) {
             // 支援 Class="PatchOperationAdd" 或 Class="PatchOperationReplace"
             XAttribute classAttr = patch.Attribute("Class");
             if (classAttr == null) continue;
@@ -223,16 +316,24 @@ namespace RimTrans.Builder {
                 // 確認是已知的 DefType 且有 defName
                 if (!newDef.HasField_defName()) continue;
 
-                bool isKnownDef = false;
-                foreach (string defTypeName in DefTypeNameOf.AllNames) {
-                    if (string.Compare(newDef.Name.ToString(), defTypeName, true) == 0) {
-                        isKnownDef = true;
-                        if (newDef.Name.ToString() != defTypeName)
-                            newDef.Name = defTypeName;
-                        break;
-                    }
-                }
-                if (!isKnownDef) continue;
+                        bool isKnownDef = false;
+                        foreach (string defTypeName in DefTypeNameOf.AllNames)
+                        {
+                            string newDefNameStr = newDef.Name.ToString();
+                            string shortName = newDefNameStr.Contains(".")
+                                ? newDefNameStr.Substring(newDefNameStr.LastIndexOf('.') + 1)
+                                : newDefNameStr;
+
+                            if (string.Compare(newDefNameStr, defTypeName, true) == 0 ||
+                                (newDefNameStr != shortName && string.Compare(shortName, defTypeName, true) == 0))
+                            {
+                                isKnownDef = true;
+                                if (newDef.Name.ToString() != defTypeName)
+                                    newDef.Name = defTypeName;
+                                break;
+                            }
+                        }
+                        if (!isKnownDef) continue;
 
                 // 把這個 Def 注入到現有的 _data 裡
                 string patchKey = "Patches\\" + filePath.Substring(splitIndex);
@@ -268,66 +369,108 @@ namespace RimTrans.Builder {
         public static List<string> ResolveFolders(string modRoot)
         {
             {
-            var folders = new List<string>();
-            string loadFoldersPath = Path.Combine(modRoot, "LoadFolders.xml");
+                var folders = new List<string>();
+                string loadFoldersPath = Path.Combine(modRoot, "LoadFolders.xml");
 
-            if (!File.Exists(loadFoldersPath))
-            {
-                // 沒有 LoadFolders.xml，直接用根目錄
-                folders.Add(modRoot);
-                return folders;
-            }
-
-            try
-            {
-                XDocument doc = XDocument.Load(loadFoldersPath);
-                // 優先找最新版本：1.6 → 1.5 → 1.4 → 1.3
-                string[] versionPriority = { "v1.6", "v1.5", "v1.4", "v1.3" };
-                XElement bestVersion = null;
-                foreach (string ver in versionPriority)
+                if (!File.Exists(loadFoldersPath))
                 {
-                    bestVersion = doc.Root.Element(ver);
-                    if (bestVersion != null) break;
-                }
-
-                if (bestVersion == null)
-                {
+                    // 沒有 LoadFolders.xml，先加根目錄
                     folders.Add(modRoot);
+
+                    // 再找版本子資料夾，取最新版本
+                    string[] versionPriority = { "1.6", "1.5", "1.4", "1.3" };
+                    foreach (string ver in versionPriority)
+                    {
+                        string verPath = Path.Combine(modRoot, ver);
+                        if (Directory.Exists(verPath))
+                        {
+                            folders.Add(verPath);
+                            break; // 只加最新版本
+                        }
+                    }
                     return folders;
                 }
 
-                foreach (XElement li in bestVersion.Elements("li"))
+                try
                 {
-                    // 跳過有 IfModActive 條件的（可選模組，暫不處理）
-                    if (li.Attribute("IfModActive") != null) continue;
-
-                    string folderVal = li.Value.Trim();
-                    string fullPath;
-                    if (folderVal == "/")
+                    XDocument doc = XDocument.Load(loadFoldersPath);
+                    // 優先找最新版本：1.6 → 1.5 → 1.4 → 1.3
+                    string[] versionPriority = { "v1.6", "v1.5", "v1.4", "v1.3" };
+                    XElement bestVersion = null;
+                    foreach (string ver in versionPriority)
                     {
-                        fullPath = modRoot;
-                    }
-                    else
-                    {
-                        fullPath = Path.Combine(modRoot, folderVal.TrimStart('/'));
+                        bestVersion = doc.Root.Element(ver);
+                        if (bestVersion != null) break;
                     }
 
-                    if (Directory.Exists(fullPath))
+                    if (bestVersion == null)
                     {
-                        folders.Add(fullPath);
+                        folders.Add(modRoot);
+                        return folders;
                     }
+
+                    HashSet<string> activeMods = GetActiveMods();
+
+                    foreach (XElement li in bestVersion.Elements("li"))
+                    {
+                        XAttribute ifModActive = li.Attribute("IfModActive");
+                        if (ifModActive != null && !activeMods.Contains(ifModActive.Value.ToLower()))
+                            continue;
+
+                        string folderVal = li.Value.Trim();
+                        string fullPath;
+                        if (folderVal == "/")
+                        {
+                            fullPath = modRoot;
+                        }
+                        else
+                        {
+                            fullPath = Path.Combine(modRoot, folderVal.TrimStart('/'));
+                        }
+
+                        if (Directory.Exists(fullPath))
+                        {
+                            folders.Add(fullPath);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning();
+                    Log.WriteLine("Failed to read LoadFolders.xml: " + ex.Message);
+                    folders.Add(modRoot);
+                }
+
+                return folders;
+            }
+        }
+        private static HashSet<string> GetActiveMods()
+        {
+            var mods = new HashSet<string>();
+            try
+            {
+                string configPath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "..", "LocalLow", "Ludeon Studios",
+                    "RimWorld by Ludeon Studios", "Config", "ModsConfig.xml");
+                configPath = Path.GetFullPath(configPath);
+
+                if (!File.Exists(configPath)) return mods;
+
+                XDocument doc = XDocument.Load(configPath);
+                foreach (XElement li in doc.Root
+                    .Element("activeMods")?.Elements("li") ?? Enumerable.Empty<XElement>())
+                {
+                    mods.Add(li.Value.Trim().ToLower());
                 }
             }
             catch (Exception ex)
             {
                 Log.Warning();
-                Log.WriteLine("Failed to read LoadFolders.xml: " + ex.Message);
-                folders.Add(modRoot);
+                Log.WriteLine("Failed to read ModsConfig.xml: " + ex.Message);
             }
-
-            return folders;
+            return mods;
         }
-}
         #endregion
 
         #region Inherit

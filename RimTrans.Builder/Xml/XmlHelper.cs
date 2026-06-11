@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
@@ -287,9 +287,20 @@ namespace RimTrans.Builder.Xml {
                   string.Compare(fieldName, "titleShort") == 0 ||
                   string.Compare(fieldName, "first") == 0 ||
                   string.Compare(fieldName, "last") == 0 ||
-                  string.Compare(fieldName, "nick") == 0 
+                  string.Compare(fieldName, "nick") == 0  ||
 
-                  ) {
+// Support for PeteTimesSix.ResearchReinvented
+string.Compare(fieldName, "header_Direct", true) == 0 ||
+string.Compare(fieldName, "header_Ancestor", true) == 0 ||
+string.Compare(fieldName, "shortDesc_Direct", true) == 0 ||
+string.Compare(fieldName, "shortDesc_Ancestor", true) == 0 ||
+string.Compare(fieldName, "category_Direct", true) == 0 ||
+string.Compare(fieldName, "category_Ancestor", true) == 0 ||
+
+                // Support for customLabel in BodyDef patches
+                string.Compare(fieldName, "customLabel", true) == 0 
+                  )
+            {
                 return true;
             }
             return false;
